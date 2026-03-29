@@ -1,0 +1,30 @@
+{
+  "name": "homebridge-tesla-wall-connector",
+  "version": "1.0.0",
+  "displayName": "Tesla Wall Connector",
+  "description": "Homebridge plugin for Tesla Wall Connector Gen 3 local API",
+  "engines": {
+    "node": ">=18.0.0",
+    "homebridge": ">=1.8.0"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "tesla",
+    "wall-connector",
+    "ev"
+  ],
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "homebridge": "^1.8.0",
+    "typescript": "^5.0.0"
+  }
+}
