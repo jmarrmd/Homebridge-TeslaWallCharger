@@ -7,11 +7,9 @@
     "node": ">=18.0.0",
     "homebridge": ">=1.8.0"
   },
-  "main": "dist/index.js",
+  "main": "index.js",
   "scripts": {
-    "build": "tsc",
-    "watch": "tsc -w",
-    "prepublishOnly": "npm run build"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
     "homebridge-plugin",
@@ -23,8 +21,6 @@
     "axios": "^1.6.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "homebridge": "^1.8.0",
-    "typescript": "^5.0.0"
+    "homebridge": "^1.8.0"
   }
 }
