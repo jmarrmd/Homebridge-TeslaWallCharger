@@ -8,6 +8,14 @@
     "homebridge": "^1.8.0 || ^2.0.0"
   },
   "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jmarrmd/Homebridge-TeslaWallCharger.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jmarrmd/Homebridge-TeslaWallCharger/issues"
+  },
+  "homepage": "https://github.com/jmarrmd/Homebridge-TeslaWallCharger#readme",
   "files": [
     "index.js",
     "matterEnergy.js",
