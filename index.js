@@ -27,7 +27,7 @@
  *
  * Notes:
  * - This plugin polls the wall connector's /api/1/vitals endpoint.
- * - Tested on Node 14+ and Homebridge 1.3+.
+ * - Compatible with Homebridge 1.8+ and Homebridge 2.0 (HAP-NodeJS v1).
  */
 
 const axios = require('axios');
@@ -148,42 +148,29 @@ class TeslaWallConnectorAccessory {
   }
 
   setupCustomCharacteristics() {
-    // Helper to create and add a custom characteristic (Eve)
+    // Helper to create and add a custom characteristic (Eve-compatible)
+    // Uses the HAP-NodeJS v1 (Homebridge 2.0) compatible class-extension pattern.
     const addCustom = (uuid, key, props) => {
-      // create a new Characteristic class instance using HAP constructor form
-      // Note: creating dynamic characteristics is somewhat advanced; HomeKit clients may or may not display them.
-      const CharClass = function() {
-        hap.Characteristic.call(this, props.displayName || key, uuid);
-        Object.assign(this.props, {
-          format: props.format || Characteristic.Formats.FLOAT,
-          unit: props.unit || null,
-          perms: props.perms || [Characteristic.Perms.READ, Characteristic.Perms.NOTIFY]
-        });
+      const CharClass = class extends hap.Characteristic {
+        static UUID = uuid;
+        constructor() {
+          super(props.displayName || key, uuid, {
+            format: props.format || hap.Formats.FLOAT,
+            unit: props.unit || undefined,
+            perms: props.perms || [hap.Perms.PAIRED_READ, hap.Perms.NOTIFY],
+          });
+          this.value = this.getDefaultValue();
+        }
       };
-      CharClass.UUID = uuid;
-      CharClass.prototype = Object.create(hap.Characteristic.prototype);
-      CharClass.prototype.constructor = CharClass;
 
-      // Register (locally) if not already (avoid duplicate registration errors)
-      try {
-        hap.Characteristic[uuid] = hap.Characteristic[uuid] || CharClass;
-      } catch (e) {
-        // ignore
-      }
-
-      // Add to service if not present
+      // Add to service if not already present
       let existing = this.service.getCharacteristic(CharClass);
       if (!existing) {
         try {
           existing = this.service.addCharacteristic(CharClass);
-        } catch (e) {
-          // In some versions, addCharacteristic expects Characteristic class, in others an instance — handle both
-          try {
-            existing = this.service.addCharacteristic(new CharClass());
-          } catch (err) {
-            this.log.warn('Could not add custom characteristic', uuid, err.message || err);
-            return;
-          }
+        } catch (err) {
+          this.log.warn('Could not add custom characteristic', uuid, err.message || err);
+          return;
         }
       }
 
@@ -274,4 +261,3 @@ class TeslaWallConnectorAccessory {
     if (this._pollTimer) clearInterval(this._pollTimer);
   }
 }
-
