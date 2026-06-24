@@ -170,4 +170,4 @@ This is an unofficial, community-built plugin and is **not affiliated with, endo
 
 ## License
 
-This project does not yet declare a license. If you intend others to use or contribute, consider adding one (e.g. [MIT](https://choosealicense.com/licenses/mit/) or [Apache-2.0](https://choosealicense.com/licenses/apache-2.0/)) and a matching `license` field in `package.json`.
+Released under the [MIT License](LICENSE).
