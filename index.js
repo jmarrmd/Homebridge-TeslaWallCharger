@@ -6,14 +6,24 @@
  *  - Outlet service (On = contactor closed)
  *  - OutletInUse (vehicle connected)
  *  - Eve-friendly custom characteristics for Voltage, Current, Consumption (W) and Total Consumption (kWh)
+ *  - (Optional, forward-compatible) a Matter EnergyEvse device so the charger
+ *    can appear in the Apple Home Energy view once Homebridge exposes the
+ *    Matter energy device types. See matterEnergy.js and:
+ *      https://github.com/homebridge/homebridge/issues/3942
  *
  * Configuration (in Homebridge `config.json` platforms array):
  * {
  *   "platform": "TeslaWallConnector",
  *   "name": "Tesla Wall Connector",
  *   "ipAddress": "192.168.1.50",
- *   "pollInterval": 30000
+ *   "pollInterval": 30000,
+ *   "matter": false
  * }
+ *
+ * `matter` (default false): opt in to publishing the charger as a Matter
+ * EnergyEvse device. This is a safe no-op on every current Homebridge build —
+ * it only takes effect once the platform surfaces the Matter energy API — so it
+ * can be turned on ahead of time with no risk.
  *
  * Notes:
  * - This plugin polls the wall connector's /api/1/vitals endpoint.
@@ -21,6 +31,7 @@
  */
 
 const axios = require('axios');
+const { MatterEnergyBridge } = require('./matterEnergy');
 
 let Service, Characteristic, hap;
 
@@ -117,6 +128,19 @@ class TeslaWallConnectorAccessory {
     this.service.updateCharacteristic(Characteristic.On, false);
     this.service.updateCharacteristic(Characteristic.OutletInUse, false);
 
+    // Matter-readiness shim (opt-in via config `matter: true`).
+    // No-op on current Homebridge builds; lights up automatically once the
+    // platform exposes the Matter energy device types (homebridge#3942).
+    this.matter = null;
+    if (this.platform.config.matter) {
+      this.matter = new MatterEnergyBridge(this.platform);
+      if (this.matter.detect()) {
+        this.matter.register(this.accessory, this.getReadings());
+      } else {
+        this.log.info('[matter] Config option "matter" is enabled but this Homebridge build does not yet expose the Matter energy device types — the charger will appear in the Apple Home Energy view once it does (homebridge#3942). No action needed.');
+      }
+    }
+
     // Start polling
     this.pollStatus();
     const interval = this.platform.config.pollInterval || 30000;
@@ -205,6 +229,23 @@ class TeslaWallConnectorAccessory {
     }
   }
 
+  /**
+   * Normalized electrical readings, in human units. This is the single source
+   * of truth consumed by both the Eve characteristic update path and the Matter
+   * EnergyEvse bridge, so the two stay in sync and the Matter cluster mapping
+   * lives in exactly one place (matterEnergy.js#buildClusters).
+   */
+  getReadings() {
+    return {
+      voltageV: this.state.voltage,
+      currentA: this.state.current,
+      powerW: this.state.powerWatts,
+      energyWh: this.state.totalWh,
+      vehicleConnected: this.state.vehicleConnected,
+      charging: this.state.contactorClosed,
+    };
+  }
+
   updateCharacteristics() {
     // Outlet "On" = contactor closed (charging)
     try {
@@ -223,6 +264,9 @@ class TeslaWallConnectorAccessory {
     } catch (e) {
       this.log.warn('Failed to update custom characteristics:', e.message || e);
     }
+
+    // Push the same readings to the Matter EnergyEvse device (no-op unless active)
+    if (this.matter) this.matter.update(this.getReadings());
   }
 
   // Homebridge will call this on shutdown/unload
