@@ -28,10 +28,10 @@
         "description": "How often to poll /api/1/vitals, in milliseconds."
       },
       "matter": {
-        "title": "Show in the Apple Home Energy view (via Matter)",
+        "title": "Publish over Matter instead of HomeKit (Apple Home Energy view)",
         "type": "boolean",
         "default": false,
-        "description": "Also publish the charger over Matter as an outlet with live electrical measurements, so it shows watts on its tile and feeds your home energy total. Requires Homebridge 2.3.0+ with Matter enabled on this plugin's child bridge."
+        "description": "Publish the charger over Matter as an outlet with live electrical measurements, so it shows watts on its tile and feeds your home energy total. This REPLACES the HomeKit accessory rather than adding to it, so the charger only appears once — switching means re-assigning its room and automations, and the Eve voltage/current/power characteristics are not available. Requires Homebridge 2.3.0+ with Matter enabled on this bridge; falls back to HomeKit if unavailable."
       }
     }
   }
