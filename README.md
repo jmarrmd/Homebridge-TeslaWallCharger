@@ -14,15 +14,26 @@ It surfaces live charging status and electrical readings (voltage, current, powe
 
 ## Features
 
+The plugin publishes **exactly one accessory**, over one of two transports — pick with the `matter` option:
+
+**HomeKit mode** (default, `"matter": false`)
+
 - 🔌 **Outlet accessory** in the Home app
   - **On** → the charger is actively delivering power (contactor closed)
   - **In Use** → a vehicle is plugged in
 - ⚡ **Live electrical readings** as Eve-compatible characteristics
   - Voltage (V), Current (A), Power (W), and cumulative Energy (kWh)
   - Viewable with history graphs in the [Eve app](https://www.evehome.com/en/eve-app), Controller for HomeKit, Home+, etc.
+
+**Matter mode** (`"matter": true`)
+
+- 🔋 **Apple Home Energy view** — publishes as a Matter outlet carrying `ElectricalPowerMeasurement` / `ElectricalEnergyMeasurement`, so live watts show on the tile and consumption feeds your home energy total
+- Requires Homebridge 2.3.0+ with Matter enabled; the Eve characteristics are HAP-only and are **not** available in this mode
+
+**Both modes**
+
 - 🏠 **Local & private** — polls the charger directly on your LAN
-- 🔋 **Apple Home Energy view** (optional) — publishes over Matter as an outlet carrying `ElectricalPowerMeasurement` / `ElectricalEnergyMeasurement`, so live watts show on the tile and consumption feeds your home energy total (requires Homebridge 2.3.0+ with Matter enabled)
-- 🧩 Works on **Homebridge 1.8+ and Homebridge 2.0** (HAP-NodeJS v1)
+- 🧩 Works on **Homebridge 1.8+ and Homebridge 2.x** (HAP-NodeJS v1)
 
 ---
 
@@ -77,7 +88,7 @@ Add a platform block to the `platforms` array of your Homebridge `config.json`, 
 | `name`         | string    | ✅       | `"Tesla Wall Connector"`| Accessory name shown in the Home app. |
 | `ipAddress`    | string    | ✅       | —                       | Local IP address of the Wall Connector. |
 | `pollInterval` | number    | ❌       | `30000`                 | How often to poll the charger, in milliseconds (minimum 5000). |
-| `matter`       | boolean   | ❌       | `false`                 | Also publish the charger over Matter with electrical measurements, so it appears in the Apple Home Energy view (see [Apple Home Energy & Matter](#apple-home-energy--matter)). Requires Homebridge 2.3.0+ with Matter enabled; skipped safely otherwise. |
+| `matter`       | boolean   | ❌       | `false`                 | Publish over **Matter instead of HomeKit**, so the charger appears in the Apple Home Energy view (see [Apple Home Energy & Matter](#apple-home-energy--matter)). Requires Homebridge 2.3.0+ with Matter enabled; falls back to HomeKit if unavailable. The Eve characteristics are not available in this mode. |
 
 ### Finding your Wall Connector's IP address
 
@@ -99,6 +110,8 @@ You should get a JSON response containing fields like `contactor_closed`, `vehic
 
 ## How it appears in HomeKit
 
+*(HomeKit mode — the default. For Matter mode see [below](#apple-home-energy--matter).)*
+
 The charger shows up as an **Outlet**:
 
 | HomeKit state | Meaning |
@@ -118,7 +131,7 @@ The electrical readings are attached as **Eve custom characteristics**. Apple's 
 
 Apple Home's native **Energy** view is driven by **Matter** electrical-measurement clusters, **not** by classic HomeKit/HAP characteristics. HAP has no power or energy characteristic at all, so the Eve characteristics above (which only Eve-class apps read) can never populate it — no matter how the HomeKit accessory is shaped.
 
-Homebridge 2.2.0 added the Matter electrical measurement clusters to its plugin API, and 2.3.0 fixed the composition and bridge-online behavior needed to use them. With `"matter": true`, this plugin publishes the charger a second time over Matter as an **outlet carrying live electrical measurements**:
+Homebridge 2.2.0 added the Matter electrical measurement clusters to its plugin API, and 2.3.0 fixed the composition and bridge-online behavior needed to use them. With `"matter": true`, this plugin publishes the charger over Matter — **instead of** over HomeKit — as an **outlet carrying live electrical measurements**:
 
 | Wall Connector reading | Matter cluster attribute | Unit sent |
 | ---------------------- | ------------------------ | --------- |
@@ -134,7 +147,13 @@ Homebridge 2.2.0 added the Matter electrical measurement clusters to its plugin 
 - **Matter enabled on this plugin's child bridge** — in the Homebridge UI: plugin settings → **Bridge Settings** → enable Matter, then pair the Matter bridge in the Home app
 - An Apple Home setup on **iOS/tvOS 26 or later** for the Energy view itself
 
-If the Matter API isn't available (older Homebridge, or Matter not enabled), the plugin detects that, logs a single informational line, and continues to work exactly as before over HomeKit/Eve.
+If the Matter API isn't available (older Homebridge, or Matter not enabled), the plugin logs a warning and **falls back to publishing over HomeKit**, so the charger always appears somewhere.
+
+### Switching modes
+
+Only one accessory is ever published, so turning `matter` on removes the cached HomeKit accessory (otherwise it would linger in the Home app as an unresponsive duplicate). Because the two are different accessories, switching either way means the old one disappears and a new one appears — **you'll need to re-assign its room, rename it, and re-create any automations that referenced it.** The trade-off is one clean tile instead of two.
+
+Note also that the **Eve characteristics are HAP-only**: in Matter mode you gain the Apple Home Energy view but lose the Eve app's voltage/current/power history graphs. If that history matters more to you than the Energy tile, stay in HomeKit mode.
 
 ### What to expect
 
