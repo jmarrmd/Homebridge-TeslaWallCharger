@@ -6,10 +6,9 @@
  *  - Outlet service (On = contactor closed)
  *  - OutletInUse (vehicle connected)
  *  - Eve-friendly custom characteristics for Voltage, Current, Consumption (W) and Total Consumption (kWh)
- *  - (Optional, forward-compatible) a Matter EnergyEvse device so the charger
- *    can appear in the Apple Home Energy view once Homebridge exposes the
- *    Matter energy device types. See matterEnergy.js and:
- *      https://github.com/homebridge/homebridge/issues/3942
+ *  - (Optional) a Matter outlet carrying live electrical measurements, so the
+ *    charger appears in the Apple Home Energy view (iOS/tvOS 26+) with live
+ *    watts on its tile. See matterEnergy.js.
  *
  * Configuration (in Homebridge `config.json` platforms array):
  * {
@@ -20,14 +19,14 @@
  *   "matter": false
  * }
  *
- * `matter` (default false): opt in to publishing the charger as a Matter
- * EnergyEvse device. This is a safe no-op on every current Homebridge build —
- * it only takes effect once the platform surfaces the Matter energy API — so it
- * can be turned on ahead of time with no risk.
+ * `matter` (default false): opt in to also publishing the charger over Matter
+ * with ElectricalPowerMeasurement / ElectricalEnergyMeasurement clusters.
+ * Requires Homebridge 2.3.0+ with Matter enabled on this plugin's child bridge;
+ * on anything older it is detected and skipped, leaving HAP/Eve untouched.
  *
  * Notes:
  * - This plugin polls the wall connector's /api/1/vitals endpoint.
- * - Compatible with Homebridge 1.8+ and Homebridge 2.0 (HAP-NodeJS v1).
+ * - Compatible with Homebridge 1.8+ and Homebridge 2.x (HAP-NodeJS v1).
  */
 
 const axios = require('axios');
@@ -128,16 +127,22 @@ class TeslaWallConnectorAccessory {
     this.service.updateCharacteristic(Characteristic.On, false);
     this.service.updateCharacteristic(Characteristic.OutletInUse, false);
 
-    // Matter-readiness shim (opt-in via config `matter: true`).
-    // No-op on current Homebridge builds; lights up automatically once the
-    // platform exposes the Matter energy device types (homebridge#3942).
+    // Matter export (opt-in via config `matter: true`). Publishes the charger
+    // as a Matter outlet with electrical measurements so it shows live watts in
+    // the Apple Home Energy view. Skipped cleanly when unsupported.
     this.matter = null;
     if (this.platform.config.matter) {
-      this.matter = new MatterEnergyBridge(this.platform);
-      if (this.matter.detect()) {
-        this.matter.register(this.accessory, this.getReadings());
+      const bridge = new MatterEnergyBridge(this.platform);
+      if (bridge.isSupported()) {
+        this.matter = bridge;
+        // Registration is async; failures are logged inside register().
+        bridge.register(
+          this.accessory.context.device.ip,
+          accessory.displayName,
+          this.getReadings(),
+        ).catch(() => {});
       } else {
-        this.log.info('[matter] Config option "matter" is enabled but this Homebridge build does not yet expose the Matter energy device types — the charger will appear in the Apple Home Energy view once it does (homebridge#3942). No action needed.');
+        this.log.info('[matter] Config option "matter" is enabled, but the Matter API is unavailable. It needs Homebridge 2.3.0 or later with Matter enabled on this plugin\'s child bridge. Continuing with HomeKit/Eve only.');
       }
     }
 
@@ -219,7 +224,7 @@ class TeslaWallConnectorAccessory {
   /**
    * Normalized electrical readings, in human units. This is the single source
    * of truth consumed by both the Eve characteristic update path and the Matter
-   * EnergyEvse bridge, so the two stay in sync and the Matter cluster mapping
+   * Matter export, so the two stay in sync and the Matter cluster mapping
    * lives in exactly one place (matterEnergy.js#buildClusters).
    */
   getReadings() {
@@ -252,8 +257,8 @@ class TeslaWallConnectorAccessory {
       this.log.warn('Failed to update custom characteristics:', e.message || e);
     }
 
-    // Push the same readings to the Matter EnergyEvse device (no-op unless active)
-    if (this.matter) this.matter.update(this.getReadings());
+    // Push the same readings to the Matter outlet (no-op unless registered)
+    if (this.matter) this.matter.update(this.getReadings()).catch(() => {});
   }
 
   // Homebridge will call this on shutdown/unload
