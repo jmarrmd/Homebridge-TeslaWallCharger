@@ -3,7 +3,7 @@
   "pluginType": "platform",
   "singular": true,
   "headerDisplay": "Homebridge plugin for the Tesla Wall Connector (Gen 3) local API.",
-  "footerDisplay": "The **Matter EnergyEvse** option is forward-compatible: enabling it is a safe no-op on current Homebridge builds and only takes effect once Homebridge exposes the Matter energy device types ([homebridge#3942](https://github.com/homebridge/homebridge/issues/3942)).",
+  "footerDisplay": "To use the **Apple Home Energy view** option you need Homebridge 2.3.0 or later with **Matter enabled** on this plugin's child bridge (Bridge Settings → enable Matter), then pair the Matter bridge in the Home app. If Matter isn't available the option is skipped safely and the plugin keeps working over HomeKit/Eve.",
   "schema": {
     "type": "object",
     "properties": {
@@ -28,10 +28,10 @@
         "description": "How often to poll /api/1/vitals, in milliseconds."
       },
       "matter": {
-        "title": "Publish as Matter EnergyEvse device",
+        "title": "Show in the Apple Home Energy view (via Matter)",
         "type": "boolean",
         "default": false,
-        "description": "Expose the charger as a Matter EnergyEvse device so it appears in the Apple Home Energy view (iOS 27+). Safe to enable ahead of platform support — no-op until Homebridge exposes the Matter energy device types."
+        "description": "Also publish the charger over Matter as an outlet with live electrical measurements, so it shows watts on its tile and feeds your home energy total. Requires Homebridge 2.3.0+ with Matter enabled on this plugin's child bridge."
       }
     }
   }

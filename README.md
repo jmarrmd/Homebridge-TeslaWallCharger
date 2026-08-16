@@ -6,7 +6,7 @@
 
 A [Homebridge](https://homebridge.io) plugin that exposes a **Tesla Wall Connector (Gen 3)** in Apple HomeKit using the charger's **local API** — no Tesla account, cloud login, or internet round-trip required.
 
-It surfaces live charging status and electrical readings (voltage, current, power, energy) and is **forward-ready for the Apple Home Energy view** via Matter once Homebridge supports the Matter energy device types.
+It surfaces live charging status and electrical readings (voltage, current, power, energy), and can optionally publish itself over **Matter** so it appears in the **Apple Home Energy view** with live watts on its tile.
 
 > **Read-only:** this plugin *reports* what the charger is doing — it does not start or stop charging. The Gen 3 Wall Connector's local `/vitals` API is monitoring-only.
 
@@ -21,7 +21,7 @@ It surfaces live charging status and electrical readings (voltage, current, powe
   - Voltage (V), Current (A), Power (W), and cumulative Energy (kWh)
   - Viewable with history graphs in the [Eve app](https://www.evehome.com/en/eve-app), Controller for HomeKit, Home+, etc.
 - 🏠 **Local & private** — polls the charger directly on your LAN
-- 🔋 **Matter-ready** — optional, forward-compatible scaffolding to appear in the native Apple Home **Energy** view (iOS 27+) once Homebridge exposes the Matter energy device types ([homebridge#3942](https://github.com/homebridge/homebridge/issues/3942))
+- 🔋 **Apple Home Energy view** (optional) — publishes over Matter as an outlet carrying `ElectricalPowerMeasurement` / `ElectricalEnergyMeasurement`, so live watts show on the tile and consumption feeds your home energy total (requires Homebridge 2.3.0+ with Matter enabled)
 - 🧩 Works on **Homebridge 1.8+ and Homebridge 2.0** (HAP-NodeJS v1)
 
 ---
@@ -77,7 +77,7 @@ Add a platform block to the `platforms` array of your Homebridge `config.json`, 
 | `name`         | string    | ✅       | `"Tesla Wall Connector"`| Accessory name shown in the Home app. |
 | `ipAddress`    | string    | ✅       | —                       | Local IP address of the Wall Connector. |
 | `pollInterval` | number    | ❌       | `30000`                 | How often to poll the charger, in milliseconds (minimum 5000). |
-| `matter`       | boolean   | ❌       | `false`                 | Opt in to the Matter EnergyEvse readiness shim (see [Apple Home Energy & Matter](#apple-home-energy--matter)). Safe to enable ahead of platform support — it's a no-op until Homebridge exposes the API. |
+| `matter`       | boolean   | ❌       | `false`                 | Also publish the charger over Matter with electrical measurements, so it appears in the Apple Home Energy view (see [Apple Home Energy & Matter](#apple-home-energy--matter)). Requires Homebridge 2.3.0+ with Matter enabled; skipped safely otherwise. |
 
 ### Finding your Wall Connector's IP address
 
@@ -116,25 +116,33 @@ The electrical readings are attached as **Eve custom characteristics**. Apple's 
 
 ## Apple Home Energy & Matter
 
-iOS 27 adds a native **Energy** view to the Apple Home app — but it is driven by **Matter** energy device types, **not** by classic HomeKit/HAP characteristics. That means the Eve characteristics above (which only Eve-class apps read) will **not** populate Apple's native Energy tile.
+Apple Home's native **Energy** view is driven by **Matter** electrical-measurement clusters, **not** by classic HomeKit/HAP characteristics. HAP has no power or energy characteristic at all, so the Eve characteristics above (which only Eve-class apps read) can never populate it — no matter how the HomeKit accessory is shaped.
 
-A Tesla Wall Connector is a perfect match for the Matter **`EnergyEvse`** (Electric Vehicle Supply Equipment) device type, and its readings map cleanly onto the Matter electrical-measurement clusters:
+Homebridge 2.2.0 added the Matter electrical measurement clusters to its plugin API, and 2.3.0 fixed the composition and bridge-online behavior needed to use them. With `"matter": true`, this plugin publishes the charger a second time over Matter as an **outlet carrying live electrical measurements**:
 
-| Wall Connector reading | Matter mapping |
-| ---------------------- | -------------- |
-| `grid_v`               | Electrical Power Measurement → `voltage` |
-| `vehicle_current_a`    | Electrical Power Measurement → `activeCurrent` |
-| power (`V × A`)        | Electrical Power Measurement → `activePower` |
-| `session_energy_wh`    | Electrical Energy Measurement → `cumulativeEnergyImported` |
+| Wall Connector reading | Matter cluster attribute | Unit sent |
+| ---------------------- | ------------------------ | --------- |
+| `grid_v`               | `electricalPowerMeasurement.voltage` | mV |
+| `vehicle_current_a`    | `electricalPowerMeasurement.activeCurrent` | mA |
+| power (`V × A`)        | `electricalPowerMeasurement.activePower` | mW |
+| `session_energy_wh`    | `electricalEnergyMeasurement.cumulativeEnergyImported.energy` | mWh |
+| `contactor_closed`     | `onOff.onOff` | — |
 
-The blocker today is upstream: Homebridge bundles the Matter libraries but does not yet expose the energy device types through its public API ([homebridge#3942](https://github.com/homebridge/homebridge/issues/3942)).
+### Requirements
 
-This plugin ships a **forward-compatible shim** (`matterEnergy.js`). When you set `"matter": true`:
+- **Homebridge 2.3.0 or later**
+- **Matter enabled on this plugin's child bridge** — in the Homebridge UI: plugin settings → **Bridge Settings** → enable Matter, then pair the Matter bridge in the Home app
+- An Apple Home setup on **iOS/tvOS 26 or later** for the Energy view itself
 
-- On **current** Homebridge builds it is a **guaranteed no-op** — it detects that the Matter energy API is absent and does nothing.
-- Once Homebridge exposes the energy device types, it **automatically** registers the charger as a Matter `EnergyEvse` device so it appears in the Apple Home Energy view — **no plugin update or config change required.**
+If the Matter API isn't available (older Homebridge, or Matter not enabled), the plugin detects that, logs a single informational line, and continues to work exactly as before over HomeKit/Eve.
 
-You can safely turn it on now to be ready.
+### What to expect
+
+Live watts appear on the accessory's tile, and its consumption is counted toward your home's energy total. Note that Apple currently reserves the **per-device listing** in the Energy breakdown for certified, natively-paired Matter devices — bridged accessories like this one contribute to the total and show on their own tile, but may not get their own row in that list.
+
+### Read-only
+
+The Gen 3 local API reports status but cannot start or stop charging, so the Matter outlet is effectively read-only. If you toggle it in the Home app, the plugin logs a warning and the next poll restores the true state.
 
 ---
 

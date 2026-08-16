@@ -1,47 +1,54 @@
 /**
  * matterEnergy.js
  *
- * Matter-readiness shim for the Tesla Wall Connector plugin.
+ * Publishes the Tesla Wall Connector to Matter controllers as an outlet that
+ * reports live electrical measurements, so it appears in the Apple Home Energy
+ * view (iOS/tvOS 26+) with live watts on its tile.
  *
  * Background
  * ----------
- * Apple Home's native Energy view (iOS 27+) is driven by *Matter* energy
- * device types and their electrical-measurement clusters — NOT by classic
- * HomeKit/HAP characteristics. HAP has no native power/energy characteristic,
- * so the Eve custom characteristics this plugin exposes (Voltage / Current /
- * Consumption / Total Consumption) are only read by Eve-class apps and never
- * populate Apple's native Energy tile.
+ * Apple Home's Energy view is driven by *Matter* electrical-measurement
+ * clusters, not by classic HomeKit/HAP characteristics. HAP has no native
+ * power/energy characteristic, so the Eve custom characteristics this plugin
+ * also exposes are only ever read by Eve-class apps and never populate the
+ * native Energy tile.
  *
- * A Tesla Wall Connector maps almost 1:1 onto the Matter `EnergyEvse`
- * (Electric Vehicle Supply Equipment) device type:
+ * Homebridge 2.2.0 added the electrical measurement clusters to its Matter
+ * plugin API, and 2.3.0 fixed composition/bridge-online behavior. This module
+ * uses that API directly:
  *
- *   grid_v            -> Electrical Power Measurement  : voltage
- *   vehicle_current_a -> Electrical Power Measurement  : activeCurrent
- *   grid_v * current  -> Electrical Power Measurement  : activePower
- *   session_energy_wh -> Electrical Energy Measurement : cumulativeEnergyImported
+ *   grid_v            -> electricalPowerMeasurement.voltage        (mV)
+ *   vehicle_current_a -> electricalPowerMeasurement.activeCurrent  (mA)
+ *   grid_v * current  -> electricalPowerMeasurement.activePower    (mW)
+ *   session_energy_wh -> electricalEnergyMeasurement
+ *                          .cumulativeEnergyImported.energy        (mWh)
  *
- * The blocker
- * -----------
- * Homebridge 2.x embeds a Matter server, but its curated `api.matter.deviceTypes`
- * map does not yet surface the energy device types (EnergyEvse, ElectricalMeter,
- * SolarPower, BatteryStorage, ...). Tracked upstream in:
- *   https://github.com/homebridge/homebridge/issues/3942
+ * Matter expresses all of these in milli-units, hence the x1000 conversions.
  *
- * This module is therefore a *forward-compatible shim*. It:
- *   - detects, at runtime, whether the Matter EnergyEvse API is reachable;
- *   - is a guaranteed no-op on every current Homebridge build (the API isn't
- *     there, so detect() returns false and nothing else runs);
- *   - registers + updates a Matter EnergyEvse device automatically once the
- *     platform exposes the API, with no further code changes required.
+ * Homebridge fills in the mandatory cluster attributes (powerMode,
+ * numberOfMeasurementTypes, accuracy) itself, and chooses the feature-gated
+ * ElectricalEnergyMeasurement features from which energy attributes we declare
+ * (declaring `cumulativeEnergyImported` selects ImportedEnergy + CumulativeEnergy).
+ * So this module only declares the readings themselves.
  *
- * Everything that touches the (not-yet-final) Matter API is wrapped so that a
- * partially-implemented or differently-shaped API can never crash the plugin —
- * worst case it logs and falls back to HAP/Eve only.
+ * Requirements
+ * ------------
+ * - Homebridge 2.3.0 or later
+ * - Matter enabled on this plugin's child bridge (Homebridge UI ->
+ *   plugin settings -> Bridge Settings -> enable Matter)
+ *
+ * Everything here is feature-detected and guarded: on a Homebridge build
+ * without the Matter API, or with Matter disabled, `isSupported()` returns
+ * false and the plugin runs HAP/Eve-only exactly as before.
  */
 
 'use strict';
 
-const MATTER_ISSUE_URL = 'https://github.com/homebridge/homebridge/issues/3942';
+const PLUGIN_NAME = 'homebridge-tesla-wall-connector';
+const PLATFORM_NAME = 'TeslaWallConnector';
+
+/** Matter uses milli-units for electrical measurements. */
+const milli = (value) => Math.round((Number(value) || 0) * 1000);
 
 class MatterEnergyBridge {
   /**
@@ -52,130 +59,144 @@ class MatterEnergyBridge {
     this.log = platform.log;
     this.api = platform.api;
 
-    this.deviceType = null; // resolved Matter EnergyEvse device type, when available
-    this.node = null;       // handle returned by the registration call, when available
-    this.enabled = false;   // true if the API surface was detected
-    this.active = false;    // true once a Matter device has actually been registered
+    this.uuid = null;        // UUID of the registered Matter accessory
+    this.registered = false; // true once registration resolved successfully
+    this._warnedUpdate = false;
   }
 
   /**
-   * Detect whether this Homebridge build exposes the Matter EnergyEvse device type.
-   * Returns true only if the device type is reachable through the public API.
-   * Logs at debug level so it never spams logs on unsupported builds.
+   * Whether this Homebridge build exposes everything needed to publish an
+   * outlet with electrical measurements. Logs at debug level so unsupported
+   * builds stay quiet.
    */
-  detect() {
-    const deviceTypes = this.api && this.api.matter && this.api.matter.deviceTypes;
-    if (!deviceTypes) {
-      this.log.debug(`[matter] api.matter.deviceTypes not available on this Homebridge build — Matter energy export disabled. Tracking: ${MATTER_ISSUE_URL}`);
-      this.enabled = false;
+  isSupported() {
+    const matter = this.api && this.api.matter;
+    if (!matter) {
+      this.log.debug('[matter] api.matter unavailable — Matter energy export disabled. Requires Homebridge 2.3.0+ with Matter enabled on this plugin\'s child bridge.');
       return false;
     }
-
-    // Accept either capitalization in case the final API name differs slightly.
-    const evse = deviceTypes.EnergyEvse || deviceTypes.energyEvse || null;
-    if (!evse) {
-      this.log.debug(`[matter] api.matter.deviceTypes present but EnergyEvse not yet exposed — Matter energy export disabled. Tracking: ${MATTER_ISSUE_URL}`);
-      this.enabled = false;
+    if (!matter.deviceTypes || !matter.deviceTypes.OnOffOutlet) {
+      this.log.debug('[matter] api.matter.deviceTypes.OnOffOutlet unavailable — Matter energy export disabled.');
       return false;
     }
-
-    this.deviceType = evse;
-    this.enabled = true;
+    if (typeof matter.registerPlatformAccessories !== 'function' || typeof matter.updateAccessoryState !== 'function') {
+      this.log.debug('[matter] Matter registration/update API unavailable — Matter energy export disabled.');
+      return false;
+    }
     return true;
   }
 
   /**
-   * Translate the plugin's normalized readings into Matter cluster attributes.
-   * Matter expresses electrical quantities in milli-units (mV / mA / mW / mWh).
-   *
-   * Attribute names follow the Matter 1.3/1.4 spec for the Electrical Power
-   * Measurement, Electrical Energy Measurement and Energy EVSE clusters. If the
-   * final Homebridge binding uses different keys, this is the one place to adjust.
+   * Build the Matter cluster state from the plugin's normalized readings.
+   * Homebridge adds the mandatory attributes it can derive itself.
    *
    * @param {object} r - readings from TeslaWallConnectorAccessory#getReadings()
    */
   buildClusters(r) {
     return {
+      onOff: {
+        onOff: !!r.charging,
+      },
       electricalPowerMeasurement: {
-        voltage: Math.round((r.voltageV || 0) * 1000),       // mV
-        activeCurrent: Math.round((r.currentA || 0) * 1000), // mA
-        activePower: Math.round((r.powerW || 0) * 1000),     // mW
+        voltage: milli(r.voltageV),
+        activeCurrent: milli(r.currentA),
+        activePower: milli(r.powerW),
       },
       electricalEnergyMeasurement: {
-        // A wall charger only ever *imports* energy from the grid.
+        // A wall charger only ever imports energy from the grid.
         cumulativeEnergyImported: {
-          energy: Math.round((r.energyWh || 0) * 1000),      // mWh
+          energy: milli(r.energyWh),
         },
-      },
-      energyEvse: {
-        state: r.vehicleConnected
-          ? (r.charging ? 'PluggedInCharging' : 'PluggedInDemand')
-          : 'NotPluggedIn',
-        supplyState: r.charging ? 'ChargingEnabled' : 'Disabled',
       },
     };
   }
 
   /**
-   * Register the accessory as a Matter EnergyEvse device, if the platform
-   * exposes a registration entry point. Fully guarded: on any unexpected API
-   * shape it logs once and disables itself, leaving HAP/Eve untouched.
+   * Register the charger as a Matter outlet with electrical measurements.
    *
-   * @param {object} accessory - the Homebridge platformAccessory
-   * @param {object} readings - initial readings to seed the device with
-   * @returns {boolean} whether a Matter device was successfully registered
+   * @param {string} ip - charger IP, used for the serial number / UUID seed
+   * @param {string} displayName
+   * @param {object} readings - initial readings to seed the clusters with
+   * @returns {Promise<boolean>} whether registration succeeded
    */
-  register(accessory, readings) {
-    if (!this.enabled) return false;
+  async register(ip, displayName, readings) {
+    if (!this.isSupported()) return false;
+
+    const matter = this.api.matter;
+    // Distinct from the HAP accessory UUID so the two never collide.
+    this.uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:matter:${ip}`);
+
+    const accessory = {
+      UUID: this.uuid,
+      displayName,
+      deviceType: matter.deviceTypes.OnOffOutlet,
+      serialNumber: ip,
+      manufacturer: 'Tesla',
+      model: 'Wall Connector Gen 3',
+      context: { ip },
+      clusters: this.buildClusters(readings),
+      handlers: {
+        // The Gen 3 local API is read-only: it reports status but cannot start
+        // or stop charging. Accept the command so the controller isn't left
+        // hanging, warn, and push the true state back so the tile re-syncs.
+        onOff: {
+          on: async () => this._rejectControl(true),
+          off: async () => this._rejectControl(false),
+        },
+      },
+    };
 
     try {
-      // The exact registration entry point is not finalized upstream (#3942),
-      // so probe for the most likely candidates and bail cleanly if none exist.
-      // This way the plugin never throws on a build that exposes the device type
-      // but not (yet) a way to publish it.
-      const publish =
-        (this.api.matter && typeof this.api.matter.publishDevice === 'function')
-          ? this.api.matter.publishDevice.bind(this.api.matter)
-          : (typeof accessory.configureMatterDevice === 'function')
-            ? accessory.configureMatterDevice.bind(accessory)
-            : null;
-
-      if (!publish) {
-        this.log.info(`[matter] EnergyEvse device type is available but no registration entry point was found on this build. Skipping Matter export — please finalize the call site against ${MATTER_ISSUE_URL}.`);
-        return false;
-      }
-
-      this.node = publish({
-        deviceType: this.deviceType,
-        clusters: this.buildClusters(readings),
-      });
-      this.active = true;
-      this.log.info('[matter] Registered Tesla Wall Connector as a Matter EnergyEvse device — it will appear in the Apple Home Energy view.');
+      await matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.registered = true;
+      this.log.info('[matter] Published Tesla Wall Connector as a Matter outlet with electrical measurements — live power should appear on its tile in the Apple Home Energy view.');
       return true;
     } catch (err) {
-      this.log.warn(`[matter] Failed to register Matter EnergyEvse device (${err && err.message ? err.message : err}). Falling back to HAP/Eve only.`);
-      this.active = false;
+      this.log.warn(`[matter] Failed to register Matter accessory (${err && err.message ? err.message : err}). Continuing with HAP/Eve only.`);
+      this.registered = false;
       return false;
     }
   }
 
   /**
-   * Push fresh readings to the registered Matter device. No-op until a device
-   * has actually been registered. Guarded so a mismatched update API can't
-   * disrupt the regular HAP/Eve update path.
+   * Called when a controller tries to switch the outlet. Charging cannot be
+   * controlled through the local API, so log once per attempt and let the next
+   * poll restore the real state.
+   */
+  _rejectControl(requested) {
+    this.log.warn(`[matter] Ignoring request to turn the charger ${requested ? 'on' : 'off'} — the Wall Connector's local API is read-only and cannot control charging.`);
+  }
+
+  /**
+   * Push fresh readings to the registered Matter accessory.
+   * No-op until registration has succeeded.
    *
    * @param {object} readings - readings from getReadings()
    */
-  update(readings) {
-    if (!this.active || !this.node) return;
+  async update(readings) {
+    if (!this.registered || !this.uuid) return;
+
+    const matter = this.api.matter;
+    const clusters = this.buildClusters(readings);
+
     try {
-      if (typeof this.node.update === 'function') {
-        this.node.update(this.buildClusters(readings));
-      }
+      await Promise.all([
+        matter.updateAccessoryState(this.uuid, 'onOff', clusters.onOff),
+        matter.updateAccessoryState(this.uuid, 'electricalPowerMeasurement', clusters.electricalPowerMeasurement),
+        matter.updateAccessoryState(this.uuid, 'electricalEnergyMeasurement', clusters.electricalEnergyMeasurement),
+      ]);
     } catch (err) {
-      this.log.debug(`[matter] update skipped: ${err && err.message ? err.message : err}`);
+      // Log the first failure at warn, the rest at debug, so a persistently
+      // unhappy Matter server can't flood the log on every poll.
+      const message = `[matter] Failed to update Matter state: ${err && err.message ? err.message : err}`;
+      if (!this._warnedUpdate) {
+        this._warnedUpdate = true;
+        this.log.warn(message);
+      } else {
+        this.log.debug(message);
+      }
     }
   }
 }
 
-module.exports = { MatterEnergyBridge };
+module.exports = { MatterEnergyBridge, PLUGIN_NAME, PLATFORM_NAME };
