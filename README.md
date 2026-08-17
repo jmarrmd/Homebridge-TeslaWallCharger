@@ -89,6 +89,7 @@ Add a platform block to the `platforms` array of your Homebridge `config.json`, 
 | `ipAddress`    | string    | ✅       | —                       | Local IP address of the Wall Connector. |
 | `pollInterval` | number    | ❌       | `30000`                 | How often to poll the charger, in milliseconds (minimum 5000). |
 | `matter`       | boolean   | ❌       | `false`                 | Publish over **Matter instead of HomeKit**, so the charger appears in the Apple Home Energy view (see [Apple Home Energy & Matter](#apple-home-energy--matter)). Requires Homebridge 2.3.0+ with Matter enabled; falls back to HomeKit if unavailable. The Eve characteristics are not available in this mode. |
+| `matterEvseBeta` | boolean | ❌       | `false`                 | **Experimental.** Publish as Matter's `EnergyEvse` device type instead of an outlet (see [EVSE beta](#evse-beta-experimental)). Requires `matter: true`. Falls back to the outlet automatically if it can't be used. |
 
 ### Finding your Wall Connector's IP address
 
@@ -162,6 +163,40 @@ Live watts appear on the accessory's tile, and its consumption is counted toward
 ### Read-only
 
 The Gen 3 local API reports status but cannot start or stop charging, so the Matter outlet is effectively read-only. If you toggle it in the Home app, the plugin logs a warning and the next poll restores the true state.
+
+---
+
+## EVSE beta (experimental)
+
+An outlet is a *stand-in*. Matter has a device type written specifically for EV chargers — **`EnergyEvse`**, device type **1292** — and since iOS 27 is the release where Apple added energy management, there's a reasonable chance Apple renders it as a proper EV charger with charging state rather than a generic plug.
+
+Set `"matterEvseBeta": true` (with `"matter": true`) to try it.
+
+**This is genuinely unverified.** Apple Home may render a better tile, a confusing one, or nothing at all. Nobody appears to have published what happens, so treat it as an experiment rather than a feature.
+
+Two things make it safe to try:
+
+- **Automatic fallback.** If the `EnergyEvse` device type can't be loaded, or registration fails, the plugin logs why and publishes the ordinary outlet instead. You can't end up with no accessory.
+- **Reversible.** Turn the option off to go back to the known-good outlet.
+
+<details>
+<summary>How it works, and why it isn't the default</summary>
+
+Homebridge's `api.matter.deviceTypes` map doesn't include `EnergyEvse` — but that map is a convenience re-export, not a whitelist: `MatterAccessory.deviceType` accepts any matter.js `EndpointType`. The device type does ship in `@matter/main` (which Homebridge depends on), so the plugin requires it directly from `@matter/main/devices/energy-evse`.
+
+Because the plugin doesn't declare `@matter/main` as its own dependency, that `require` only resolves if the install tree puts it within reach — which is why the fallback exists rather than a hard failure.
+
+`EnergyEvse` has two mandatory clusters, `EnergyEvse` and `EnergyEvseMode`, which the plugin populates:
+
+| Charger state | `energyEvse.state` |
+| --- | --- |
+| No vehicle | `NotPluggedIn` (0) |
+| Plugged in, not charging | `PluggedInNoDemand` (1) |
+| Charging | `PluggedInCharging` (3) |
+
+`supplyState` follows charging (`ChargingEnabled` / `Disabled`), and a single "Charging" mode is advertised to satisfy `EnergyEvseMode`, since the local API exposes no selectable modes. The current limits it advertises (6 A min, 48 A max, 48 A circuit) are static capability figures, not live readings — live values still come from the electrical measurement clusters, which are declared alongside exactly as in outlet mode.
+
+</details>
 
 ---
 
