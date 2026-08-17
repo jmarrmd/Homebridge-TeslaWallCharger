@@ -1,6 +1,6 @@
 {
   "name": "homebridge-tesla-wall-connector",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "displayName": "Tesla Wall Connector",
   "description": "Homebridge plugin for Tesla Wall Connector Gen 3 local API",
   "license": "MIT",

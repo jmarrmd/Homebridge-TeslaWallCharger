@@ -50,6 +50,41 @@ const PLATFORM_NAME = 'TeslaWallConnector';
 /** Matter uses milli-units for electrical measurements. */
 const milli = (value) => Math.round((Number(value) || 0) * 1000);
 
+/**
+ * EnergyEvse cluster enums (Matter spec / @matter/types energy-evse).
+ * Inlined so the plugin does not need to import @matter just to read a number.
+ */
+const EvseState = {
+  NotPluggedIn: 0,
+  PluggedInNoDemand: 1,
+  PluggedInDemand: 2,
+  PluggedInCharging: 3,
+  PluggedInDischarging: 4,
+  SessionEnding: 5,
+  Fault: 6,
+};
+
+const EvseSupplyState = {
+  Disabled: 0,
+  ChargingEnabled: 1,
+  DischargingEnabled: 2,
+  DisabledError: 3,
+  DisabledDiagnostics: 4,
+};
+
+const EVSE_FAULT_STATE_NO_ERROR = 0;
+
+/**
+ * Current limits reported by the EnergyEvse cluster, in mA.
+ * A hardwired Gen 3 Wall Connector is commonly on a 60 A circuit at 48 A
+ * continuous; 6 A is the J1772 minimum. These are advertised capability
+ * figures, not live readings — the live current comes from the electrical
+ * measurement clusters.
+ */
+const EVSE_MIN_CHARGE_CURRENT_MA = 6000;
+const EVSE_MAX_CHARGE_CURRENT_MA = 48000;
+const EVSE_CIRCUIT_CAPACITY_MA = 48000;
+
 class MatterEnergyBridge {
   /**
    * @param {object} platform - the Homebridge platform (provides .api and .log)
@@ -61,7 +96,44 @@ class MatterEnergyBridge {
 
     this.uuid = null;        // UUID of the registered Matter accessory
     this.registered = false; // true once registration resolved successfully
+    this.mode = null;        // 'evse' or 'outlet', set once registered
     this._warnedUpdate = false;
+  }
+
+  /**
+   * Try to resolve the Matter EnergyEvse device type.
+   *
+   * Homebridge's curated `api.matter.deviceTypes` map is a convenience
+   * re-export, not a whitelist — `MatterAccessory.deviceType` accepts any
+   * matter.js `EndpointType`. EnergyEvse is absent from that map but does ship
+   * in `@matter/main`, which Homebridge depends on, so it can be required
+   * directly.
+   *
+   * The plugin does not declare @matter/main itself, so resolution depends on
+   * how the install tree is laid out. Returns null if it cannot be found, and
+   * the caller falls back to the outlet device type.
+   *
+   * @returns {object|null} the EnergyEvseDevice endpoint type, or null
+   */
+  resolveEvseDeviceType() {
+    const attempts = [
+      '@matter/main/devices/energy-evse',
+      '@matter/node/devices/energy-evse',
+    ];
+
+    for (const id of attempts) {
+      try {
+        const mod = require(id);
+        const device = mod && (mod.EnergyEvseDevice || mod.default);
+        if (device) {
+          this.log.debug(`[matter] Resolved EnergyEvse device type from ${id}`);
+          return device;
+        }
+      } catch (err) {
+        this.log.debug(`[matter] Could not load ${id}: ${err && err.message ? err.message : err}`);
+      }
+    }
+    return null;
   }
 
   /**
@@ -112,7 +184,54 @@ class MatterEnergyBridge {
   }
 
   /**
-   * Register the charger as a Matter outlet with electrical measurements.
+   * Map the charger's state onto the EnergyEvse cluster.
+   *
+   * The electrical measurement clusters are declared alongside: the EnergyEvse
+   * device type does not include them in its own behaviors, but Homebridge
+   * attaches them from the declared cluster state regardless of device type.
+   *
+   * @param {object} r - readings from getReadings()
+   */
+  buildEvseClusters(r) {
+    let state = EvseState.NotPluggedIn;
+    if (r.vehicleConnected) {
+      state = r.charging ? EvseState.PluggedInCharging : EvseState.PluggedInNoDemand;
+    }
+
+    const base = this.buildClusters(r);
+
+    return {
+      energyEvse: {
+        state,
+        supplyState: r.charging ? EvseSupplyState.ChargingEnabled : EvseSupplyState.Disabled,
+        faultState: EVSE_FAULT_STATE_NO_ERROR,
+        chargingEnabledUntil: null,
+        sessionId: null,
+        circuitCapacity: EVSE_CIRCUIT_CAPACITY_MA,
+        minimumChargeCurrent: EVSE_MIN_CHARGE_CURRENT_MA,
+        maximumChargeCurrent: EVSE_MAX_CHARGE_CURRENT_MA,
+      },
+      // EnergyEvseMode is mandatory on the EnergyEvse device type. The charger
+      // has no selectable modes over the local API, so a single mode is
+      // advertised to satisfy the cluster.
+      energyEvseMode: {
+        supportedModes: [
+          { label: 'Charging', mode: 1, modeTags: [{ value: 0 }] },
+        ],
+        currentMode: 1,
+      },
+      electricalPowerMeasurement: base.electricalPowerMeasurement,
+      electricalEnergyMeasurement: base.electricalEnergyMeasurement,
+    };
+  }
+
+  /**
+   * Register the charger as a Matter accessory.
+   *
+   * Prefers the experimental EnergyEvse device type when `matterEvseBeta` is
+   * set and the device type resolves; otherwise publishes the proven outlet.
+   * If EnergyEvse registration fails for any reason, it retries as an outlet so
+   * a failed experiment never leaves the charger unpublished.
    *
    * @param {string} ip - charger IP, used for the serial number / UUID seed
    * @param {string} displayName
@@ -122,38 +241,72 @@ class MatterEnergyBridge {
   async register(ip, displayName, readings) {
     if (!this.isSupported()) return false;
 
-    const matter = this.api.matter;
     // Distinct from the HAP accessory UUID so the two never collide.
     this.uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:matter:${ip}`);
+
+    if (this.platform.config.matterEvseBeta) {
+      const evseDeviceType = this.resolveEvseDeviceType();
+      if (!evseDeviceType) {
+        this.log.warn('[matter] EVSE beta is enabled but the Matter EnergyEvse device type could not be loaded from @matter/main. Publishing as an outlet instead.');
+      } else if (await this._tryRegister(ip, displayName, readings, 'evse', evseDeviceType)) {
+        return true;
+      } else {
+        this.log.warn('[matter] EVSE beta registration failed — retrying as a regular Matter outlet so the charger still appears.');
+      }
+    }
+
+    return this._tryRegister(ip, displayName, readings, 'outlet', this.api.matter.deviceTypes.OnOffOutlet);
+  }
+
+  /**
+   * Attempt a single registration in the given mode.
+   * @returns {Promise<boolean>} success
+   */
+  async _tryRegister(ip, displayName, readings, mode, deviceType) {
+    const isEvse = mode === 'evse';
 
     const accessory = {
       UUID: this.uuid,
       displayName,
-      deviceType: matter.deviceTypes.OnOffOutlet,
+      deviceType,
       serialNumber: ip,
       manufacturer: 'Tesla',
       model: 'Wall Connector Gen 3',
       context: { ip },
-      clusters: this.buildClusters(readings),
-      handlers: {
-        // The Gen 3 local API is read-only: it reports status but cannot start
-        // or stop charging. Accept the command so the controller isn't left
-        // hanging, warn, and push the true state back so the tile re-syncs.
+      clusters: isEvse ? this.buildEvseClusters(readings) : this.buildClusters(readings),
+    };
+
+    if (!isEvse) {
+      // The Gen 3 local API is read-only: it reports status but cannot start
+      // or stop charging. Accept the command so the controller isn't left
+      // hanging, warn, and let the next poll push the true state back.
+      accessory.handlers = {
         onOff: {
           on: async () => this._rejectControl(true),
           off: async () => this._rejectControl(false),
         },
-      },
-    };
+      };
+    }
 
     try {
-      await matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      await this.api.matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.registered = true;
-      this.log.info('[matter] Published Tesla Wall Connector as a Matter outlet with electrical measurements — live power should appear on its tile in the Apple Home Energy view.');
+      this.mode = mode;
+      if (isEvse) {
+        this.log.info('[matter] Published Tesla Wall Connector as an experimental Matter EnergyEvse device (device type 1292). How Apple Home renders this is unverified — if the tile looks wrong or is missing, turn off the EVSE beta option to go back to the outlet.');
+      } else {
+        this.log.info('[matter] Published Tesla Wall Connector as a Matter outlet with electrical measurements — live power should appear on its tile in the Apple Home Energy view.');
+      }
       return true;
     } catch (err) {
-      this.log.warn(`[matter] Failed to register Matter accessory (${err && err.message ? err.message : err}). Continuing with HAP/Eve only.`);
+      const detail = err && err.message ? err.message : err;
+      if (isEvse) {
+        this.log.warn(`[matter] EnergyEvse registration failed: ${detail}`);
+      } else {
+        this.log.warn(`[matter] Failed to register Matter accessory (${detail}). Continuing without Matter.`);
+      }
       this.registered = false;
+      this.mode = null;
       return false;
     }
   }
@@ -177,14 +330,24 @@ class MatterEnergyBridge {
     if (!this.registered || !this.uuid) return;
 
     const matter = this.api.matter;
-    const clusters = this.buildClusters(readings);
+    const isEvse = this.mode === 'evse';
+    const clusters = isEvse ? this.buildEvseClusters(readings) : this.buildClusters(readings);
+
+    // In EVSE mode the charging state lives on the EnergyEvse cluster; in
+    // outlet mode it lives on onOff. The electrical measurements are the same
+    // in both. `energyEvseMode` is static, so it is not re-pushed.
+    const writes = isEvse
+      ? [['energyEvse', {
+          state: clusters.energyEvse.state,
+          supplyState: clusters.energyEvse.supplyState,
+        }]]
+      : [['onOff', clusters.onOff]];
+
+    writes.push(['electricalPowerMeasurement', clusters.electricalPowerMeasurement]);
+    writes.push(['electricalEnergyMeasurement', clusters.electricalEnergyMeasurement]);
 
     try {
-      await Promise.all([
-        matter.updateAccessoryState(this.uuid, 'onOff', clusters.onOff),
-        matter.updateAccessoryState(this.uuid, 'electricalPowerMeasurement', clusters.electricalPowerMeasurement),
-        matter.updateAccessoryState(this.uuid, 'electricalEnergyMeasurement', clusters.electricalEnergyMeasurement),
-      ]);
+      await Promise.all(writes.map(([cluster, attrs]) => matter.updateAccessoryState(this.uuid, cluster, attrs)));
     } catch (err) {
       // Log the first failure at warn, the rest at debug, so a persistently
       // unhappy Matter server can't flood the log on every poll.
