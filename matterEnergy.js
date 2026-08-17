@@ -121,19 +121,84 @@ class MatterEnergyBridge {
       '@matter/node/devices/energy-evse',
     ];
 
+    const roots = this._matterResolutionRoots();
+    const tried = [];
+
     for (const id of attempts) {
+      // Plain require first: works when @matter has been hoisted somewhere the
+      // plugin can already see.
       try {
-        const mod = require(id);
-        const device = mod && (mod.EnergyEvseDevice || mod.default);
+        const device = this._pickDevice(require(id));
         if (device) {
           this.log.debug(`[matter] Resolved EnergyEvse device type from ${id}`);
           return device;
         }
       } catch (err) {
-        this.log.debug(`[matter] Could not load ${id}: ${err && err.message ? err.message : err}`);
+        tried.push(`${id}: ${err && err.code ? err.code : (err && err.message) || err}`);
+      }
+
+      // Then resolve against Homebridge's own module paths. @matter/main is a
+      // dependency of homebridge rather than of this plugin, so it normally
+      // lives in homebridge's node_modules, which is outside the plugin's
+      // default resolution chain.
+      try {
+        const resolved = require.resolve(id, { paths: roots });
+        const device = this._pickDevice(require(resolved));
+        if (device) {
+          this.log.debug(`[matter] Resolved EnergyEvse device type from ${resolved}`);
+          return device;
+        }
+      } catch (err) {
+        tried.push(`${id} (via homebridge paths): ${err && err.code ? err.code : (err && err.message) || err}`);
       }
     }
+
+    this.log.debug(`[matter] EnergyEvse resolution attempts:\n  ${tried.join('\n  ')}`);
+    this.log.debug(`[matter] Searched roots:\n  ${roots.join('\n  ')}`);
     return null;
+  }
+
+  /** Extract the device type export from a loaded matter.js devices module. */
+  _pickDevice(mod) {
+    if (!mod) return null;
+    return mod.EnergyEvseDevice || (mod.default && mod.default.EnergyEvseDevice) || null;
+  }
+
+  /**
+   * Candidate `node_modules` roots to resolve @matter from.
+   *
+   * Homebridge is ESM, so `require.main` is not available to a CommonJS plugin.
+   * The reliable anchor is the running Homebridge entry script: walking up from
+   * it yields `<homebridge-install>/node_modules`, where its dependencies live.
+   */
+  _matterResolutionRoots() {
+    const path = require('path');
+    const roots = [];
+
+    const addAncestors = (startDir) => {
+      let dir = startDir;
+      for (;;) {
+        if (path.basename(dir) !== 'node_modules') {
+          const candidate = path.join(dir, 'node_modules');
+          if (!roots.includes(candidate)) roots.push(candidate);
+        } else if (!roots.includes(dir)) {
+          roots.push(dir);
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+    };
+
+    try {
+      if (process.argv && process.argv[1]) addAncestors(path.dirname(process.argv[1]));
+    } catch (e) { /* ignore */ }
+
+    for (const p of module.paths || []) {
+      if (!roots.includes(p)) roots.push(p);
+    }
+
+    return roots;
   }
 
   /**
