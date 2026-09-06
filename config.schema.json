@@ -37,10 +37,7 @@
         "title": "BETA: publish as an EV charger (EnergyEvse) instead of an outlet",
         "type": "boolean",
         "default": false,
-        "condition": {
-          "functionBody": "return model.matter === true;"
-        },
-        "description": "EXPERIMENTAL. Publishes using Matter's dedicated EnergyEvse device type (1292) rather than a generic outlet, in the hope that Apple Home renders a proper EV charger tile with charging state. How Apple Home actually handles this is UNVERIFIED — it may show a better tile, an unhelpful one, or none at all. Requires the Matter option above. If the device type can't be loaded or registration fails, the plugin automatically falls back to the outlet, so you can't be left with no accessory. Turn this off to return to the known-good outlet."
+        "description": "EXPERIMENTAL — has no effect unless the Matter option above is enabled. Publishes using Matter's dedicated EnergyEvse device type (1292) rather than a generic outlet, in the hope that Apple Home renders a proper EV charger tile with charging state. How Apple Home actually handles this is UNVERIFIED — it may show a better tile, an unhelpful one, or none at all. If the device type can't be loaded or the accessory fails to come up, the plugin automatically falls back to the outlet, so you can't be left with no accessory. Turn this off to return to the known-good outlet."
       }
     }
   }
