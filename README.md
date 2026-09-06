@@ -186,7 +186,7 @@ Homebridge's `api.matter.deviceTypes` map doesn't include `EnergyEvse` — but t
 
 Because the plugin doesn't declare `@matter/main` as its own dependency, that `require` only resolves if the install tree puts it within reach — which is why the fallback exists rather than a hard failure.
 
-`EnergyEvse` has two mandatory clusters, `EnergyEvse` and `EnergyEvseMode`, which the plugin populates:
+`EnergyEvse` has two mandatory clusters, `EnergyEvse` and `EnergyEvseMode`. Homebridge has no behavior mapping for either — they aren't in its curated cluster list — so they can't be passed through `MatterAccessory.clusters`. Instead the plugin seeds them onto the device type with matter.js's own `MutableEndpoint.set()`, and passes only curated clusters through `clusters`.
 
 | Charger state | `energyEvse.state` |
 | --- | --- |
@@ -194,7 +194,11 @@ Because the plugin doesn't declare `@matter/main` as its own dependency, that `r
 | Plugged in, not charging | `PluggedInNoDemand` (1) |
 | Charging | `PluggedInCharging` (3) |
 
-`supplyState` follows charging (`ChargingEnabled` / `Disabled`), and a single "Charging" mode is advertised to satisfy `EnergyEvseMode`, since the local API exposes no selectable modes. The current limits it advertises (6 A min, 48 A max, 48 A circuit) are static capability figures, not live readings — live values still come from the electrical measurement clusters, which are declared alongside exactly as in outlet mode.
+`supplyState` follows charging (`ChargingEnabled` / `Disabled`), and a single "Charging" mode is advertised to satisfy `EnergyEvseMode`, since the local API exposes no selectable modes. The current limits it advertises (6 A min, 48 A max, 48 A circuit) are static capability figures, not live readings.
+
+**Known limitation — the charging state does not update.** That table describes the value captured *at registration*; it stays fixed for the life of the accessory. Homebridge builds the Matter endpoint by spreading the accessory's cluster map into the endpoint options (`{ id, ...accessory.clusters }`), so writing an uncurated cluster like `energyEvse` adds a key that isn't a behavior on the device type and breaks the *next* re-registration with `"<uuid>.energyEvse" is not a Behavior.Type`. The plugin therefore never writes it.
+
+Live **power and energy still update normally**, because those clusters are curated. But until Homebridge adds `energyEvse` to its behavior map, EVSE mode is a device-type experiment — it cannot carry live charging state, which is much of what makes the device type interesting. Outlet mode has no such restriction, since `onOff` is curated.
 
 </details>
 
