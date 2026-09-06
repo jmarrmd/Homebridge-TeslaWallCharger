@@ -184,7 +184,9 @@ Two things make it safe to try:
 
 Homebridge's `api.matter.deviceTypes` map doesn't include `EnergyEvse` — but that map is a convenience re-export, not a whitelist: `MatterAccessory.deviceType` accepts any matter.js `EndpointType`. The device type does ship in `@matter/main` (which Homebridge depends on), so the plugin requires it directly from `@matter/main/devices/energy-evse`.
 
-Because the plugin doesn't declare `@matter/main` as its own dependency, that `require` only resolves if the install tree puts it within reach — which is why the fallback exists rather than a hard failure.
+Because the plugin doesn't declare `@matter` as its own dependency, resolution depends on the install layout — which is why the fallback exists rather than a hard failure.
+
+It also has to be loaded as **ESM**. `@matter` ships dual builds (`"import"` → `dist/esm`, `"require"` → `dist/cjs`), and Homebridge is `type: module`, so it validates against the ESM copy. A device type loaded with `require()` comes from the CJS copy — a different module instance with different class identities — and is rejected with `"<uuid>.energyEvse" is not a Behavior.Type`. The plugin therefore resolves the `devices/*` subpath (the package does not export `./package.json`), swaps `dist/cjs` for `dist/esm`, and loads that file with dynamic `import()`, which lands on the same instance Homebridge uses.
 
 `EnergyEvse` has two mandatory clusters, `EnergyEvse` and `EnergyEvseMode`. Homebridge has no behavior mapping for either — they aren't in its curated cluster list — so they can't be passed through `MatterAccessory.clusters`. Instead the plugin seeds them onto the device type with matter.js's own `MutableEndpoint.set()`, and passes only curated clusters through `clusters`.
 

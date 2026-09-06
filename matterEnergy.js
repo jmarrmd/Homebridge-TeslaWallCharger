@@ -106,50 +106,70 @@ class MatterEnergyBridge {
    * Homebridge's curated `api.matter.deviceTypes` map is a convenience
    * re-export, not a whitelist — `MatterAccessory.deviceType` accepts any
    * matter.js `EndpointType`. EnergyEvse is absent from that map but does ship
-   * in `@matter/main`, which Homebridge depends on, so it can be required
-   * directly.
+   * in `@matter/main`, which Homebridge depends on.
    *
-   * The plugin does not declare @matter/main itself, so resolution depends on
-   * how the install tree is laid out. Returns null if it cannot be found, and
-   * the caller falls back to the outlet device type.
+   * It must be loaded as **ESM**, not with require(). @matter ships dual
+   * builds:
    *
-   * @returns {object|null} the EnergyEvseDevice endpoint type, or null
+   *     "import":  "./dist/esm/index.js"    <- Homebridge (type: module) uses this
+   *     "require": "./dist/cjs/index.js"    <- a CommonJS require() gets this
+   *
+   * The two are separate module instances with separate class identities, so a
+   * device type built from the CJS copy fails matter.js's behavior check inside
+   * Homebridge's ESM copy with `"<uuid>.energyEvse" is not a Behavior.Type`.
+   * Loading the ESM file by URL gives the same instance Homebridge validates
+   * against, because Node caches ESM modules by resolved URL.
+   *
+   * The plugin does not declare @matter itself, so this depends on the install
+   * layout. Returns null if it cannot be found, and the caller falls back to
+   * the outlet device type.
+   *
+   * @returns {Promise<object|null>} the EnergyEvseDevice endpoint type, or null
    */
-  resolveEvseDeviceType() {
-    const attempts = [
-      '@matter/main/devices/energy-evse',
+  async resolveEvseDeviceType() {
+    const path = require('path');
+    const { pathToFileURL } = require('url');
+
+    // Anchor on the `devices/*` subpath, which the package does export.
+    // (`./package.json` is not exported, so it cannot be resolved.)
+    // require.resolve() gives the CJS twin under dist/cjs; the ESM build sits
+    // beside it under dist/esm. A bare import() specifier is no use here — it
+    // would resolve from this plugin's directory, which cannot see Homebridge's
+    // nested node_modules.
+    const specifiers = [
       '@matter/node/devices/energy-evse',
+      '@matter/main/devices/energy-evse',
     ];
 
     const roots = this._matterResolutionRoots();
     const tried = [];
 
-    for (const id of attempts) {
-      // Plain require first: works when @matter has been hoisted somewhere the
-      // plugin can already see.
+    for (const specifier of specifiers) {
+      let cjsPath;
       try {
-        const device = this._pickDevice(require(id));
-        if (device) {
-          this.log.debug(`[matter] Resolved EnergyEvse device type from ${id}`);
-          return device;
-        }
+        cjsPath = require.resolve(specifier, { paths: roots });
       } catch (err) {
-        tried.push(`${id}: ${err && err.code ? err.code : (err && err.message) || err}`);
+        tried.push(`${specifier}: ${err && err.code ? err.code : (err && err.message) || err}`);
+        continue;
       }
 
-      // Then resolve against Homebridge's own module paths. @matter/main is a
-      // dependency of homebridge rather than of this plugin, so it normally
-      // lives in homebridge's node_modules, which is outside the plugin's
-      // default resolution chain.
-      try {
-        const resolved = require.resolve(id, { paths: roots });
-        const device = this._pickDevice(require(resolved));
-        if (device) {
-          this.log.debug(`[matter] Resolved EnergyEvse device type from ${resolved}`);
-          return device;
+      const sep = path.sep;
+      const esmPath = cjsPath.split(`${sep}dist${sep}cjs${sep}`).join(`${sep}dist${sep}esm${sep}`);
+
+      // Prefer the ESM twin; fall back to whatever resolve gave us if this
+      // package is not laid out with the dual-build convention.
+      for (const file of esmPath === cjsPath ? [cjsPath] : [esmPath, cjsPath]) {
+        try {
+          const mod = await import(pathToFileURL(file).href);
+          const device = this._pickDevice(mod);
+          if (device) {
+            this.log.debug(`[matter] Resolved EnergyEvse device type from ${file}`);
+            return device;
+          }
+          tried.push(`${file}: loaded but no EnergyEvseDevice export`);
+        } catch (err) {
+          tried.push(`${file}: ${err && err.code ? err.code : (err && err.message) || err}`);
         }
-      } catch (err) {
-        tried.push(`${id} (via homebridge paths): ${err && err.code ? err.code : (err && err.message) || err}`);
       }
     }
 
@@ -337,7 +357,7 @@ class MatterEnergyBridge {
     this.uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:matter:${ip}`);
 
     if (this.platform.config.matterEvseBeta) {
-      const evseDeviceType = this.resolveEvseDeviceType();
+      const evseDeviceType = await this.resolveEvseDeviceType();
       if (!evseDeviceType) {
         this.log.warn('[matter] EVSE beta is enabled but the Matter EnergyEvse device type could not be loaded from @matter/main. Publishing as an outlet instead.');
       } else {
