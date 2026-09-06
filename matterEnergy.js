@@ -349,7 +349,8 @@ class MatterEnergyBridge {
         // asynchronously and cannot be caught above. Confirm the accessory
         // really came up before trusting it.
         if (accepted && await this._verifyRegistered()) {
-          this.log.info('[matter] Published Tesla Wall Connector as an experimental Matter EnergyEvse device (device type 1292) and confirmed it is live. How Apple Home renders this is unverified — if the tile looks wrong or is missing, turn off the EVSE beta option to go back to the outlet.');
+          this.registered = true;
+          this.log.info('[matter] Published Tesla Wall Connector as an experimental Matter EnergyEvse device (device type 1292) and confirmed it is live. Live power and energy will update; the EnergyEvse charging state is fixed at its registered value (Homebridge cannot accept writes to that cluster). How Apple Home renders this is unverified — turn off the EVSE beta option to go back to the outlet.');
           return true;
         }
 
@@ -417,13 +418,15 @@ class MatterEnergyBridge {
 
     try {
       await this.api.matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      this.registered = true;
       this.mode = mode;
       if (isEvse) {
-        // Success is only announced once the endpoint is confirmed live —
-        // see register(). Registration resolving is not proof it came up.
+        // Stay unregistered until the endpoint is confirmed live (see
+        // register()). Marking it registered here would let a poll fire
+        // update() during the verification window, against an accessory that
+        // may still be re-registering.
         this.log.debug('[matter] EnergyEvse accessory accepted; verifying it comes up.');
       } else {
+        this.registered = true;
         this.log.info('[matter] Published Tesla Wall Connector as a Matter outlet with electrical measurements — live power should appear on its tile in the Apple Home Energy view.');
       }
       return true;
@@ -462,12 +465,19 @@ class MatterEnergyBridge {
     const isEvse = this.mode === 'evse';
     const clusters = this.buildClusters(readings, { includeOnOff: !isEvse });
 
-    // In EVSE mode the charging state lives on the EnergyEvse cluster; in
-    // outlet mode it lives on onOff. The electrical measurements are the same
-    // in both. `energyEvseMode` is static, so it is not re-pushed.
-    const writes = isEvse
-      ? [['energyEvse', this.evseState(readings)]]
-      : [['onOff', clusters.onOff]];
+    // Only clusters Homebridge curates may be written.
+    //
+    // updateAccessoryState() adds the cluster to the accessory's cluster map,
+    // and Homebridge builds the Matter endpoint by spreading that map into the
+    // endpoint options (`{ id, ...accessory.clusters }`). A key that is not a
+    // behavior on the device type then fails endpoint construction with
+    // `"<uuid>.<cluster>" is not a Behavior.Type` — so writing `energyEvse`
+    // here poisons the accessory and breaks the next re-registration.
+    //
+    // The consequence in EVSE mode is that the EnergyEvse charging state stays
+    // at whatever was baked into the device type at registration; only the
+    // electrical measurements are live. See the README.
+    const writes = isEvse ? [] : [['onOff', clusters.onOff]];
 
     writes.push(['electricalPowerMeasurement', clusters.electricalPowerMeasurement]);
     writes.push(['electricalEnergyMeasurement', clusters.electricalEnergyMeasurement]);
