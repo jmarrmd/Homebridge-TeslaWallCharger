@@ -385,7 +385,7 @@ class MatterEnergyBridge {
         // really came up before trusting it.
         if (accepted && await this._verifyRegistered()) {
           this.registered = true;
-          this.log.info('[matter] Published Tesla Wall Connector as an experimental Matter EnergyEvse device (device type 1292) and confirmed it is live. Live power and energy will update; the EnergyEvse charging state is fixed at its registered value (Homebridge cannot accept writes to that cluster). How Apple Home renders this is unverified — turn off the EVSE beta option to go back to the outlet.');
+          this.log.info('[matter] Published Tesla Wall Connector as a Matter EnergyEvse device (device type 1292) and confirmed it is live. Live power and energy update normally, but the charging state is fixed at its registered value (Homebridge cannot accept writes to the energyEvse cluster). Note that Apple Home on iOS/tvOS 27 renders this device type as a plain outlet tile — the same as outlet mode, minus the live charging state — so unless you are testing the device type itself, turning this option off is the better setup.');
           return true;
         }
 
