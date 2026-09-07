@@ -75,6 +75,21 @@ const EvseSupplyState = {
 const EVSE_FAULT_STATE_NO_ERROR = 0;
 
 /**
+ * EnergyEvseMode mode tags. These are the EVSE-specific tags, not the shared
+ * ModeBase ones (Auto = 0, Quick = 1, ...) — matter.js requires at least one
+ * supported mode tagged Manual, and rejects the accessory otherwise:
+ *
+ *   "Provided supportedModes need to include at least one Manual mode tag,
+ *    but not together with TimeOfUse or SolarCharging"
+ */
+const EvseModeTag = {
+  Manual: 16384,
+  TimeOfUse: 16385,
+  SolarCharging: 16386,
+  V2X: 16387,
+};
+
+/**
  * Current limits reported by the EnergyEvse cluster, in mA.
  * A hardwired Gen 3 Wall Connector is commonly on a 60 A circuit at 48 A
  * continuous; 6 A is the J1772 minimum. These are advertised capability
@@ -326,7 +341,7 @@ class MatterEnergyBridge {
         // advertised to satisfy the cluster.
         energyEvseMode: {
           supportedModes: [
-            { label: 'Charging', mode: 1, modeTags: [{ value: 0 }] },
+            { label: 'Charging', mode: 1, modeTags: [{ value: EvseModeTag.Manual }] },
           ],
           currentMode: 1,
         },

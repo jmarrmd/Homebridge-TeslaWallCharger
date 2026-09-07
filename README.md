@@ -196,7 +196,7 @@ It also has to be loaded as **ESM**. `@matter` ships dual builds (`"import"` →
 | Plugged in, not charging | `PluggedInNoDemand` (1) |
 | Charging | `PluggedInCharging` (3) |
 
-`supplyState` follows charging (`ChargingEnabled` / `Disabled`), and a single "Charging" mode is advertised to satisfy `EnergyEvseMode`, since the local API exposes no selectable modes. The current limits it advertises (6 A min, 48 A max, 48 A circuit) are static capability figures, not live readings.
+`supplyState` follows charging (`ChargingEnabled` / `Disabled`), and a single "Charging" mode is advertised to satisfy `EnergyEvseMode`, since the local API exposes no selectable modes. That mode carries the EVSE-specific **`Manual`** tag (16384) — matter.js requires at least one Manual-tagged mode and rejects the accessory without it; the shared ModeBase tags (`Auto` = 0 and friends) do not satisfy it. The current limits it advertises (6 A min, 48 A max, 48 A circuit) are static capability figures, not live readings.
 
 **Known limitation — the charging state does not update.** That table describes the value captured *at registration*; it stays fixed for the life of the accessory. Homebridge builds the Matter endpoint by spreading the accessory's cluster map into the endpoint options (`{ id, ...accessory.clusters }`), so writing an uncurated cluster like `energyEvse` adds a key that isn't a behavior on the device type and breaks the *next* re-registration with `"<uuid>.energyEvse" is not a Behavior.Type`. The plugin therefore never writes it.
 
