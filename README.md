@@ -172,9 +172,9 @@ An outlet is a *stand-in*. Matter has a device type written specifically for EV 
 
 Set `"matterEvseBeta": true` (with `"matter": true`) to try it.
 
-### Result: Apple Home renders it as a plain outlet
+### Result: Apple Home shows it as an unrecognized device
 
-**Tested on iOS/tvOS 27 (September 2026): the endpoint registers and comes up cleanly, and Apple Home renders device type 1292 as an ordinary outlet tile.** There is no dedicated EV-charger presentation — no charging state, no charge control, nothing an outlet doesn't already give you.
+**Tested on iOS/tvOS 27 (September 2026): the endpoint registers and comes up cleanly, but Apple Home does not recognise device type 1292 — it shows a generic house icon rather than an EV charger or even an outlet.** There is no dedicated EV-charger presentation: no charging state, no charge control. The generic tile is *worse* than outlet mode, not equivalent to it.
 
 So in practice this option currently costs more than it gives:
 
@@ -182,7 +182,7 @@ So in practice this option currently costs more than it gives:
 | --- | --- | --- |
 | Live power / energy in the Energy view | ✅ | ✅ |
 | Charging state updates | ✅ (`onOff` is curated) | ❌ frozen at registration |
-| Apple Home tile | outlet | **also outlet** |
+| Apple Home tile | outlet | **generic house icon** |
 
 **Recommendation: leave this off.** It is kept for anyone wanting to re-test after a future iOS or Homebridge release, since the only thing that would change the verdict is Apple giving the device type its own rendering.
 

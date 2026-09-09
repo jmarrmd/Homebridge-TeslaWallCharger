@@ -56,6 +56,7 @@ class TeslaWallConnectorPlatform {
     this.config = config || {};
     this.api = api;
     this.accessories = [];
+    this.matterAccessories = [];
 
     this.log.debug('TeslaWallConnector platform initialized with config:', this.config);
 
@@ -69,6 +70,47 @@ class TeslaWallConnectorPlatform {
   configureAccessory(accessory) {
     this.log.info('Restoring accessory from cache:', accessory.displayName);
     this.accessories.push(accessory);
+  }
+
+  /**
+   * Homebridge's Matter equivalent of configureAccessory: called once per
+   * cached Matter accessory at startup.
+   *
+   * Implementing this matters. Without it Homebridge logs "does not implement
+   * configureMatterAccessory" and keeps the cached accessory as-is, including
+   * the device type it was registered with. Re-registering under the same UUID
+   * only replaces it when Homebridge decides the structure changed, so a
+   * charger cached as EnergyEvse could come back as EnergyEvse even with the
+   * beta switched off. Collecting them here lets discoverDevices() unregister
+   * any accessory whose mode no longer matches the config.
+   */
+  configureMatterAccessory(accessory) {
+    this.log.debug('Restoring Matter accessory from cache:', accessory.displayName);
+    this.matterAccessories.push(accessory);
+  }
+
+  /**
+   * Drop cached Matter accessories that were registered in a different mode.
+   *
+   * The mode is recorded in the accessory's own context at registration
+   * (see matterEnergy.js), rather than inferred from the cached device type,
+   * which the cache stores only by name.
+   *
+   * @param {string|null} desiredMode - 'evse', 'outlet', or null when Matter is off
+   */
+  async pruneMatterAccessories(desiredMode) {
+    const stale = this.matterAccessories.filter(a => !a.context || a.context.mode !== desiredMode);
+    if (!stale.length) return;
+
+    const describe = a => `${a.displayName} (${(a.context && a.context.mode) || 'unknown mode'})`;
+    this.log.info(`Removing ${stale.length} cached Matter accessory(s) registered in a different mode: ${stale.map(describe).join(', ')}`);
+
+    try {
+      await this.api.matter.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+    } catch (e) {
+      this.log.warn('Failed to remove cached Matter accessory:', e.message || e);
+    }
+    this.matterAccessories = this.matterAccessories.filter(a => !stale.includes(a));
   }
 
   discoverDevices() {
@@ -91,10 +133,24 @@ class TeslaWallConnectorPlatform {
       }
     }
 
-    if (matterBridge) {
-      this.publishOverMatter(matterBridge);
+    // Clear out any cached Matter accessory left over from a different mode
+    // before publishing, so a stale device type cannot win the restore race.
+    const desiredMode = matterBridge
+      ? (this.config.matterEvseBeta ? 'evse' : 'outlet')
+      : null;
+
+    const publish = () => {
+      if (matterBridge) {
+        this.publishOverMatter(matterBridge);
+      } else {
+        this.publishOverHap();
+      }
+    };
+
+    if (this.matterAccessories.length && this.api.matter) {
+      this.pruneMatterAccessories(desiredMode).then(publish, publish);
     } else {
-      this.publishOverHap();
+      publish();
     }
   }
 

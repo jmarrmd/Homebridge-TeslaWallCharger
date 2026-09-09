@@ -385,7 +385,7 @@ class MatterEnergyBridge {
         // really came up before trusting it.
         if (accepted && await this._verifyRegistered()) {
           this.registered = true;
-          this.log.info('[matter] Published Tesla Wall Connector as a Matter EnergyEvse device (device type 1292) and confirmed it is live. Live power and energy update normally, but the charging state is fixed at its registered value (Homebridge cannot accept writes to the energyEvse cluster). Note that Apple Home on iOS/tvOS 27 renders this device type as a plain outlet tile — the same as outlet mode, minus the live charging state — so unless you are testing the device type itself, turning this option off is the better setup.');
+          this.log.info('[matter] Published Tesla Wall Connector as a Matter EnergyEvse device (device type 1292) and confirmed it is live. Live power and energy update normally, but the charging state is fixed at its registered value (Homebridge cannot accept writes to the energyEvse cluster). Note that Apple Home on iOS/tvOS 27 does not recognise this device type and shows a generic house icon rather than a proper tile, so unless you are testing the device type itself, turning this option off is the better setup.');
           return true;
         }
 
@@ -432,7 +432,11 @@ class MatterEnergyBridge {
       serialNumber: ip,
       manufacturer: 'Tesla',
       model: 'Wall Connector Gen 3',
-      context: { ip },
+      // The mode is recorded here so a later run can tell which mode a cached
+      // accessory was registered in — the cache stores the device type only by
+      // name, and Homebridge does not replace a restored accessory unless it
+      // decides the structure changed. See pruneMatterAccessories() in index.js.
+      context: { ip, mode },
       // Only clusters Homebridge knows how to map to behaviors go here. In EVSE
       // mode the energyEvse/energyEvseMode state is baked into the device type
       // instead (see composeEvseDeviceType).
