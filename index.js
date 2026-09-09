@@ -40,6 +40,12 @@
 const axios = require('axios');
 const { MatterEnergyBridge, PLUGIN_NAME, PLATFORM_NAME } = require('./matterEnergy');
 
+/**
+ * How long to wait for cached-Matter-accessory cleanup before publishing
+ * regardless. Cleanup is housekeeping; publishing is the job.
+ */
+const PRUNE_TIMEOUT_MS = 5000;
+
 let Service, Characteristic, hap;
 
 module.exports = (homebridge) => {
@@ -139,16 +145,39 @@ class TeslaWallConnectorPlatform {
       ? (this.config.matterEvseBeta ? 'evse' : 'outlet')
       : null;
 
+    // Publishing must never depend on the cleanup succeeding. Pruning is
+    // best-effort housekeeping; failing to publish leaves the charger missing
+    // from the Home app entirely, which is far worse than a stale cache entry.
     const publish = () => {
-      if (matterBridge) {
-        this.publishOverMatter(matterBridge);
-      } else {
-        this.publishOverHap();
+      try {
+        if (matterBridge) {
+          this.publishOverMatter(matterBridge);
+        } else {
+          this.publishOverHap();
+        }
+      } catch (e) {
+        this.log.error('Failed to publish Tesla Wall Connector:', e.message || e);
       }
     };
 
     if (this.matterAccessories.length && this.api.matter) {
-      this.pruneMatterAccessories(desiredMode).then(publish, publish);
+      // Bounded: an unregister call that never settles must not strand the
+      // accessory. Publish once the prune finishes, fails, or runs out of time.
+      let done = false;
+      const publishOnce = () => {
+        if (done) return;
+        done = true;
+        publish();
+      };
+
+      setTimeout(() => {
+        if (!done) {
+          this.log.warn(`Cleaning up cached Matter accessories took longer than ${PRUNE_TIMEOUT_MS}ms — publishing anyway.`);
+          publishOnce();
+        }
+      }, PRUNE_TIMEOUT_MS).unref?.();
+
+      this.pruneMatterAccessories(desiredMode).then(publishOnce, publishOnce);
     } else {
       publish();
     }
